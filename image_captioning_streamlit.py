@@ -1,11 +1,11 @@
 # Streamlit app: Image -> Caption + Description (English + Hindi)
-# Requirements:
-# pip install streamlit transformers torch pillow sentencepiece
 
 import streamlit as st
 from PIL import Image
 import io
+import os
 import torch
+
 from transformers import (
     VisionEncoderDecoderModel,
     ViTImageProcessor,
@@ -14,85 +14,146 @@ from transformers import (
     pipeline,
 )
 
-st.set_page_config(page_title="Image Captioner (EN + HI)", layout="centered")
-st.title("Image captioner — English + Hindi")
-st.write("Upload an image. The app generates a short caption and a longer description in English and translates both to Hindi.")
+# -------------------- CONFIG --------------------
+st.set_page_config(
+    page_title="Image Captioner (EN + HI)",
+    layout="centered"
+)
 
+st.title("🖼 Image Captioner — English + Hindi")
+st.write(
+    "Upload an image. The app generates a short caption and a detailed description "
+    "in English and translates both into Hindi."
+)
+
+# Secure HF token (Streamlit Secrets)
+os.environ["HF_TOKEN"] = st.secrets["HF_TOKEN"]
+
+DEVICE = "cpu"   # Streamlit Cloud SAFE
+
+# -------------------- LOAD MODELS --------------------
 @st.cache_resource
 def load_models():
-    device = 0 if torch.cuda.is_available() else -1
-
-    # 1) Image captioning (short caption)
+    # 1️⃣ Image Captioning model
     caption_model_id = "nlpconnect/vit-gpt2-image-captioning"
     caption_model = VisionEncoderDecoderModel.from_pretrained(caption_model_id)
+    caption_model.to(DEVICE)
+
     feature_extractor = ViTImageProcessor.from_pretrained(caption_model_id)
     caption_tokenizer = AutoTokenizer.from_pretrained(caption_model_id)
 
-    # 2) Text generator for longer description (Flan-T5 small — lightweight)
+    # 2️⃣ Text generation (detailed description)
     text_gen_model_id = "google/flan-t5-small"
-    text_tokenizer = AutoTokenizer.from_pretrained(text_gen_model_id)
     text_gen_model = AutoModelForSeq2SeqLM.from_pretrained(text_gen_model_id)
+    text_gen_model.to(DEVICE)
 
-    # 3) Translation pipeline EN -> HI
-    translation = pipeline("translation_en_to_hi", model="Helsinki-NLP/opus-mt-en-hi")
+    text_tokenizer = AutoTokenizer.from_pretrained(text_gen_model_id)
+
+    # 3️⃣ Translation EN -> HI (CPU forced)
+    translation = pipeline(
+        "translation_en_to_hi",
+        model="Helsinki-NLP/opus-mt-en-hi",
+        device=-1   # CPU only
+    )
 
     return {
         "caption_model": caption_model,
         "feature_extractor": feature_extractor,
         "caption_tokenizer": caption_tokenizer,
-        "text_tokenizer": text_tokenizer,
         "text_gen_model": text_gen_model,
+        "text_tokenizer": text_tokenizer,
         "translation": translation,
-        "device": device,
     }
 
 models = load_models()
 
-uploaded = st.file_uploader("Choose an image", type=["png", "jpg", "jpeg"])
-if uploaded is not None:
+# -------------------- UI --------------------
+uploaded = st.file_uploader(
+    "📤 Upload an image",
+    type=["png", "jpg", "jpeg"]
+)
+
+if uploaded:
     image = Image.open(io.BytesIO(uploaded.read())).convert("RGB")
-    st.image(image, caption="Uploaded image", use_column_width=True)
+    st.image(image, caption="Uploaded Image", use_container_width=True)
 
-    # 1) Short caption (image -> short caption)
-    pixel_values = models["feature_extractor"](images=image, return_tensors="pt").pixel_values
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    models["caption_model"].to(device)
-    pixel_values = pixel_values.to(device)
+    # ---------- SHORT CAPTION ----------
+    pixel_values = models["feature_extractor"](
+        images=image,
+        return_tensors="pt"
+    ).pixel_values.to(DEVICE)
 
-    with st.spinner("Generating caption..."):
-        output_ids = models["caption_model"].generate(pixel_values, max_length=16, num_beams=4)
-        caption = models["caption_tokenizer"].decode(output_ids[0], skip_special_tokens=True).strip()
+    with st.spinner("🧠 Generating short caption..."):
+        output_ids = models["caption_model"].generate(
+            pixel_values,
+            max_length=16,
+            num_beams=4
+        )
+        caption_en = models["caption_tokenizer"].decode(
+            output_ids[0],
+            skip_special_tokens=True
+        ).strip()
 
-    st.subheader("Caption (English)")
-    st.write(caption)
+    st.subheader("📝 Caption (English)")
+    st.write(caption_en)
 
-    # 2) Longer description: use the caption as prompt to text generator
-    prompt = f"Write a detailed, descriptive paragraph about this image. Keep it informative and vivid.\nImage caption: {caption}\nDescription:"
-    inputs = models["text_tokenizer"].encode(prompt, return_tensors="pt")
-    inputs = inputs.to(device)
-    models["text_gen_model"].to(device)
+    # ---------- DETAILED DESCRIPTION ----------
+    prompt = (
+        "Write a detailed, vivid, and informative paragraph describing the image.\n\n"
+        f"Image caption: {caption_en}\n\nDescription:"
+    )
 
-    with st.spinner("Generating detailed description (English)..."):
-        outputs = models["text_gen_model"].generate(inputs, max_new_tokens=300, num_beams=4, early_stopping=True)
-        description_en = models["text_tokenizer"].decode(outputs[0], skip_special_tokens=True).strip()
+    inputs = models["text_tokenizer"].encode(
+        prompt,
+        return_tensors="pt"
+    ).to(DEVICE)
 
-    st.subheader("Description (English)")
+    with st.spinner("📖 Generating detailed description (English)..."):
+        outputs = models["text_gen_model"].generate(
+            inputs,
+            max_new_tokens=200,
+            num_beams=4,
+            early_stopping=True
+        )
+        description_en = models["text_tokenizer"].decode(
+            outputs[0],
+            skip_special_tokens=True
+        ).strip()
+
+    st.subheader("📘 Description (English)")
     st.write(description_en)
 
-    # 3) Translate both to Hindi
-    with st.spinner("Translating to Hindi..."):
-        caption_hi = models["translation"](caption)[0]["translation_text"]
+    # ---------- TRANSLATION ----------
+    with st.spinner("🌐 Translating to Hindi..."):
+        caption_hi = models["translation"](caption_en)[0]["translation_text"]
         description_hi = models["translation"](description_en)[0]["translation_text"]
 
-    st.subheader("Caption (Hindi)")
+    st.subheader("📝 Caption (Hindi)")
     st.write(caption_hi)
 
-    st.subheader("Description (Hindi)")
+    st.subheader("📘 Description (Hindi)")
     st.write(description_hi)
 
-    st.info("Notes: Models run faster on a GPU. flan-t5-small and vit-gpt2 are moderate-size; change to larger models for better quality.\nIf memory errors occur, try using smaller models or run on a machine with more RAM/GPU.")
+    # ---------- DOWNLOAD ----------
+    result_text = f"""
+Caption (English):
+{caption_en}
 
-    st.download_button("Download results (txt)", data=(f"Caption (EN): {caption}\n\nDescription (EN): {description_en}\n\nCaption (HI): {caption_hi}\n\nDescription (HI): {description_hi}"), file_name="image_caption_results.txt")
+Description (English):
+{description_en}
+
+Caption (Hindi):
+{caption_hi}
+
+Description (Hindi):
+{description_hi}
+"""
+
+    st.download_button(
+        "⬇ Download Results (TXT)",
+        data=result_text,
+        file_name="image_caption_results.txt"
+    )
 
 else:
-    st.write("Waiting for an image — upload a photo to try it out.")
+    st.info("👆 Upload an image to start captioning.")
