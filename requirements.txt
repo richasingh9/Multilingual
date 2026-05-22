@@ -1,14 +1,8 @@
-torch==2.1.2
-torchvision==0.16.2
-torchaudio==2.1.2
---extra-index-url https://download.pytorch.org/whl/cpu
-
-streamlit
-transformers
-sentencepiece
-pillow
-numpy
-torch
-
-accelerate
-
+streamlit>=1.35.0
+torch>=2.2.0
+transformers>=4.41.0
+pillow>=10.0.0
+sentencepiece>=0.2.0
+accelerate>=0.30.0
+protobuf>=4.25.0
+sacremoses>=0.1.1
