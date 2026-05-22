@@ -8,3 +8,7 @@ transformers
 sentencepiece
 pillow
 numpy
+torch
+
+accelerate
+
