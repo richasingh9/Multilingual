@@ -6,3 +6,11 @@ sentencepiece>=0.2.0
 accelerate>=0.30.0
 protobuf>=4.25.0
 sacremoses>=0.1.1
+streamlit
+torch
+transformers
+pillow
+sentencepiece
+accelerate
+protobuf
+sacremoses
