@@ -1,139 +1,180 @@
-# image_captioning_multilang.py
+# image_captioning_multilang_improved.py
 import streamlit as st
 from PIL import Image
 import io
 import torch
+from transformers import BlipProcessor, BlipForConditionalGeneration
 from transformers import (
-    VisionEncoderDecoderModel,
-    ViTImageProcessor,
-    AutoTokenizer,
-    AutoModelForSeq2SeqLM,
-    M2M100ForConditionalGeneration,
-    M2M100Tokenizer,
+    VisionEncoderDecoderModel, ViTImageProcessor, AutoTokenizer, AutoModelForSeq2SeqLM,
+    M2M100ForConditionalGeneration, M2M100Tokenizer,
+    AutoModelForCausalLM, AutoTokenizer as AutoTok
 )
-st.set_page_config(page_title="Image Captioner - MultiLang", layout="centered")
 
-st.title("Image Captioner — English + Multilingual (HI / BHO / TA)")
-st.write("Upload an image → generate caption + description (English) → translate into selected languages.")
+st.set_page_config(page_title="Image Captioner - Improved Multilang", layout="centered")
+st.title("Image Captioner — EN → HI / TA / BHO (improved)")
 
 @st.cache_resource
 def load_models():
-    device = 0 if torch.cuda.is_available() else -1
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # 1) Image captioning model (short caption)
-    caption_model_id = "nlpconnect/vit-gpt2-image-captioning"
-    caption_model = VisionEncoderDecoderModel.from_pretrained(caption_model_id)
-    feature_extractor = ViTImageProcessor.from_pretrained(caption_model_id)
-    caption_tokenizer = AutoTokenizer.from_pretrained(caption_model_id)
+    # caption model (same)
+    #cap_id = "Salesforce/blip-image-captioning-base"
+    #cap_model = VisionEncoderDecoderModel.from_pretrained(cap_id)
+    #feat = ViTImageProcessor.from_pretrained(cap_id)
+    #cap_tok = AutoTokenizer.from_pretrained(cap_id)
 
-    # 2) Text generator for longer description
-    text_gen_model_id = "google/flan-t5-small"
-    text_tokenizer = AutoTokenizer.from_pretrained(text_gen_model_id)
-    text_gen_model = AutoModelForSeq2SeqLM.from_pretrained(text_gen_model_id)
+    
+    cap_id = "Salesforce/blip2-flan-t5-xl"
+    processor = BlipProcessor.from_pretrained(cap_id)
+    cap_model = BlipForConditionalGeneration.from_pretrained(cap_id)
 
-    # 3) Multilingual translation: use M2M100 single model for many target languages
-    trans_model_id = "facebook/m2m100_418M"
-    trans_tokenizer = M2M100Tokenizer.from_pretrained(trans_model_id)
-    trans_model = M2M100ForConditionalGeneration.from_pretrained(trans_model_id)
+    # text generator
+    text_id = "google/flan-t5-base"
+    text_tok = AutoTokenizer.from_pretrained(text_id)
+    text_model = AutoModelForSeq2SeqLM.from_pretrained(text_id)
 
-    # move heavy models to device (if available)
-    if torch.cuda.is_available():
-        caption_model.to("cuda")
-        text_gen_model.to("cuda")
-        trans_model.to("cuda")
+    # Hindi translator (Helsinki small & reliable)
+    hi_model_id = "Helsinki-NLP/opus-mt-en-hi"
+    hi_tok = AutoTokenizer.from_pretrained(hi_model_id)
+    hi_model = AutoModelForSeq2SeqLM.from_pretrained(hi_model_id)
+
+    # Tamil translator (M2M100)
+    m2m_id = "facebook/m2m100_418M"
+    m2m_tok = M2M100Tokenizer.from_pretrained(m2m_id)
+    m2m_model = M2M100ForConditionalGeneration.from_pretrained(m2m_id)
+
+    # Bhojpuri LM (fallback paraphraser) - optional, may not exist in all setups
+    bho_tokenizer = None
+    bho_model = None
+    try:
+        bho_tok = AutoTok.from_pretrained("pksx01/sarvam-1-it-bhojpuri")
+        bho_m = AutoModelForCausalLM.from_pretrained("pksx01/sarvam-1-it-bhojpuri")
+        bho_tokenizer = bho_tok
+        bho_model = bho_m
+    except Exception:
+        # If unavailable, we'll fallback to showing Hindi result
+        bho_tokenizer = None
+        bho_model = None
+
+    # Move big models to device
+    if device == "cuda":
+        cap_model.to(device)
+        text_model.to(device)
+        hi_model.to(device)
+        m2m_model.to(device)
+        if bho_model:
+            bho_model.to(device)
 
     return {
-        "caption_model": caption_model,
-        "feature_extractor": feature_extractor,
-        "caption_tokenizer": caption_tokenizer,
-        "text_tokenizer": text_tokenizer,
-        "text_gen_model": text_gen_model,
-        "trans_tokenizer": trans_tokenizer,
-        "trans_model": trans_model,
-        "device": "cuda" if torch.cuda.is_available() else "cpu",
+        "device": device,
+        "cap_model": cap_model, "processor": processor,
+        "text_model": text_model, "text_tok": text_tok,
+        "hi_model": hi_model, "hi_tok": hi_tok,
+        "m2m_model": m2m_model, "m2m_tok": m2m_tok,
+        "bho_model": bho_model, "bho_tok": bho_tokenizer
     }
 
 models = load_models()
 
-# Language mapping: display name -> m2m100 language code
-LANG_CODE = {
-    "English": "en",
-    "Hindi": "hi",
-    "Bhojpuri": "bho",
-    "Tamil": "ta",
-}
+LANGS = ["Hindi", "Tamil", "Bhojpuri", "English"]
+sel = st.multiselect("Choose languages to output", options=LANGS, default=["Hindi","Tamil","Bhojpuri","English"])
 
-st.sidebar.header("Translation targets")
-selected_langs = st.sidebar.multiselect("Choose languages to generate (besides English):",
-                                       options=list(LANG_CODE.keys()),
-                                       default=["Hindi", "Bhojpuri"])
-
-uploaded = st.file_uploader("Choose an image", type=["png", "jpg", "jpeg"])
-if uploaded is not None:
+uploaded = st.file_uploader("Upload image", type=["jpg","jpeg","png"])
+if uploaded:
     image = Image.open(io.BytesIO(uploaded.read())).convert("RGB")
-    st.image(image, caption="Uploaded image", use_column_width=True)
+    st.image(image, use_column_width=True)
 
-    # --- Short caption (English)
-    with st.spinner("Generating short caption (English)..."):
-        pixel_values = models["feature_extractor"](images=image, return_tensors="pt").pixel_values
-        pixel_values = pixel_values.to(models["device"])
-        output_ids = models["caption_model"].generate(pixel_values, max_length=16, num_beams=4)
-        caption_en = models["caption_tokenizer"].decode(output_ids[0], skip_special_tokens=True).strip()
-    st.subheader("Caption (English)")
-    st.write(caption_en)
+    # caption en
+    #px = models["feat"](images=image, return_tensors="pt").pixel_values.to(models["device"])
+    #out = models["cap_model"].generate(px, max_length=16, num_beams=4)
+    #cap_en = models["cap_tok"].decode(out[0], skip_special_tokens=True).strip()
+    inputs = models["processor"](image, return_tensors="pt").to(models["device"])
+    out = models["cap_model"].generate(**inputs)
+    cap_en = models["processor"].decode(out[0], skip_special_tokens=True)
+    st.subheader("Caption (English)"); st.write(cap_en)
 
-    # --- Long description (English) using Flan-T5
-    with st.spinner("Generating detailed description (English)..."):
-        prompt = f"Write a detailed, descriptive paragraph about this image. Image caption: {caption_en}\nDescription:"
-        inputs = models["text_tokenizer"].encode(prompt, return_tensors="pt", truncation=True, max_length=512)
-        inputs = inputs.to(models["device"])
-        outputs = models["text_gen_model"].generate(inputs, max_new_tokens=180, num_beams=4, early_stopping=True)
-        description_en = models["text_tokenizer"].decode(outputs[0], skip_special_tokens=True).strip()
-    st.subheader("Description (English)")
-    st.write(description_en)
+    # description en
+    prompt = f"Write a single paragraph of about 50 words describing the image in detail, including objects, actions, colors, and surroundings: {cap_en}"
+    inputs = models["text_tok"].encode(prompt, return_tensors="pt", truncation=True, max_length=512).to(models["device"])
+    desc_ids = models["text_model"].generate(inputs, max_new_tokens=80, do_sample=True, temperature=0.7, top_p=0.9)
+    desc_en = models["text_tok"].decode(desc_ids[0], skip_special_tokens=True).strip()
+    st.subheader("Description (English)"); st.write(desc_en)
+    desc_en = desc_en.replace("\n", " ")
+    desc_en = " ".join(desc_en.split()[:50])
 
-    # --- For each selected language, translate caption & description
-    trans_toks = models["trans_tokenizer"]
-    trans_model = models["trans_model"]
-    translations = {}
-    if selected_langs:
-        with st.spinner("Translating to selected languages..."):
-            for lang in selected_langs:
-                code = LANG_CODE.get(lang)
-                if code is None:
-                    translations[lang] = {"caption": "Language code not found", "description": ""}
-                    continue
+    # prepare outputs dict
+    outputs = {"English": {"caption": cap_en, "description": desc_en}}
 
-                # m2m100: set tokenizer src lang to English and force target language id
-                try:
-                    trans_toks.src_lang = "en"
-                    # tokenize caption
-                    cap_enc = trans_toks(caption_en, return_tensors="pt", padding=True).to(models["device"])
-                    forced_id = trans_toks.get_lang_id(code)
-                    cap_gen = trans_model.generate(**cap_enc, forced_bos_token_id=forced_id, max_new_tokens=128)
-                    caption_trans = trans_toks.decode(cap_gen[0], skip_special_tokens=True)
+    # EN -> HI (Helsinki)
+    if "Hindi" in sel:
+        try:
+            hi_tok = models["hi_tok"]; hi_mod = models["hi_model"]
+            hi_in = hi_tok(cap_en, return_tensors="pt", padding=True).to(models["device"])
+            hi_out = hi_mod.generate(**hi_in, max_new_tokens=200)
+            cap_hi = hi_tok.decode(hi_out[0], skip_special_tokens=True)
+            # description
+            d_in = hi_tok(desc_en, return_tensors="pt", padding=True, truncation=True, max_length=512).to(models["device"])
+            d_out = hi_mod.generate(**d_in, max_new_tokens=400)
+            desc_hi = hi_tok.decode(d_out[0], skip_special_tokens=True)
+        except Exception as e:
+            cap_hi = f"Error: {e}"
+            desc_hi = ""
+        outputs["Hindi"] = {"caption": cap_hi, "description": desc_hi}
+        st.subheader("Caption (Hindi)"); st.write(cap_hi)
+        st.subheader("Description (Hindi)"); st.write(desc_hi)
 
-                    # tokenize description (may be long)
-                    desc_enc = trans_toks(description_en, return_tensors="pt", padding=True, truncation=True, max_length=1024).to(models["device"])
-                    desc_gen = trans_model.generate(**desc_enc, forced_bos_token_id=forced_id, max_new_tokens=512)
-                    description_trans = trans_toks.decode(desc_gen[0], skip_special_tokens=True)
+    # EN -> TA (M2M100)
+    if "Tamil" in sel:
+        try:
+            m2m_tok = models["m2m_tok"]; m2m_mod = models["m2m_model"]
+            m2m_tok.src_lang = "en"
+            tgt = "ta"
+            forced = m2m_tok.get_lang_id(tgt)
+            enc = m2m_tok(cap_en, return_tensors="pt").to(models["device"])
+            gen = m2m_mod.generate(**enc, forced_bos_token_id=forced, max_new_tokens=128)
+            cap_ta = m2m_tok.decode(gen[0], skip_special_tokens=True)
+            # description
+            encd = m2m_tok(desc_en, return_tensors="pt", truncation=True, max_length=1024).to(models["device"])
+            gend = m2m_mod.generate(**encd, forced_bos_token_id=forced, max_new_tokens=400)
+            desc_ta = m2m_tok.decode(gend[0], skip_special_tokens=True)
+        except Exception as e:
+            cap_ta = f"Error: {e}"
+            desc_ta = ""
+        outputs["Tamil"] = {"caption": cap_ta, "description": desc_ta}
+        st.subheader("Caption (Tamil)"); st.write(cap_ta)
+        st.subheader("Description (Tamil)"); st.write(desc_ta)
 
-                    translations[lang] = {"caption": caption_trans, "description": description_trans}
-                except Exception as e:
-                    translations[lang] = {"caption": f"Translation error: {e}", "description": ""}
+    # Bhojpuri: fallback plan: EN -> HI -> BHO via Bhojpuri LM paraphrase
+    if "Bhojpuri" in sel:
+        # If we have a Bhojpuri LM
+        if models["bho_model"] and models["bho_tok"]:
+            try:
+                # first translate en -> hi (use results if present)
+                base_hi = outputs.get("Hindi", {}).get("description", desc_en)
+                # prompt the Bhojpuri LM: convert this Hindi sentence to Bhojpuri
+                prompt = f"Convert this Hindi sentence to Bhojpuri:\n\n{base_hi}\n\nBhojpuri:"
+                tok = models["bho_tok"]
+                enc = tok(prompt, return_tensors="pt", truncation=True, max_length=512).to(models["device"])
+                gen = models["bho_model"].generate(**enc, max_new_tokens=200, do_sample=False)
+                bho_text = tok.decode(gen[0], skip_special_tokens=True)
+                # split into caption/description roughly — keep as description
+                outputs["Bhojpuri"] = {"caption": "(generated from Hindi)", "description": bho_text}
+                st.subheader("Caption (Bhojpuri)"); st.write(outputs["Bhojpuri"]["caption"])
+                st.subheader("Description (Bhojpuri)"); st.write(outputs["Bhojpuri"]["description"])
+            except Exception as e:
+                st.write("Bhojpuri generation error:", e)
+                # fallback: show Hindi
+                outputs["Bhojpuri"] = {"caption": outputs.get("Hindi", {}).get("caption", cap_en), "description": outputs.get("Hindi", {}).get("description", desc_en)}
+                st.subheader("Caption (Bhojpuri - fallback Hindi)"); st.write(outputs["Bhojpuri"]["caption"])
+                st.subheader("Description (Bhojpuri - fallback Hindi)"); st.write(outputs["Bhojpuri"]["description"])
+        else:
+            # no Bhojpuri LM available — fallback to Hindi output with note
+            outputs["Bhojpuri"] = {"caption": outputs.get("Hindi", {}).get("caption", cap_en), "description": outputs.get("Hindi", {}).get("description", desc_en)}
+            st.subheader("Caption (Bhojpuri - fallback Hindi)"); st.write(outputs["Bhojpuri"]["caption"])
+            st.subheader("Description (Bhojpuri - fallback Hindi)"); st.write(outputs["Bhojpuri"]["description"])
 
-    # --- Display translations
-    for lang in selected_langs:
-        st.subheader(f"Caption ({lang})")
-        st.write(translations.get(lang, {}).get("caption", "—"))
-        st.subheader(f"Description ({lang})")
-        st.write(translations.get(lang, {}).get("description", "—"))
-
-    # --- Download results
-    out_txt = []
-    out_txt.append(f"Caption (EN): {caption_en}\n\nDescription (EN): {description_en}\n\n")
-    for lang in selected_langs:
-        out_txt.append(f"Caption ({lang}): {translations[lang]['caption']}\n\nDescription ({lang}): {translations[lang]['description']}\n\n")
-    st.download_button("Download results (txt)", data="".join(out_txt), file_name="image_caption_multilang.txt")
-else:
-    st.write("Upload an image to generate captions and translations.")
+    # download button
+    out = []
+    for lang, vals in outputs.items():
+        out.append(f"Caption ({lang}): {vals.get('caption','')}\n\nDescription ({lang}): {vals.get('description','')}\n\n")
+    st.download_button("Download all (txt)", data="".join(out), file_name="captions_multilang.txt")
