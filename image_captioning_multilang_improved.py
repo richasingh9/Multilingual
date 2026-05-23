@@ -24,7 +24,7 @@ def load_models():
     #cap_tok = AutoTokenizer.from_pretrained(cap_id)
 
     
-    cap_id = "Salesforce/blip-image-captioning-base""
+    cap_id = "Salesforce/blip2-flan-t5-xl"
     processor = BlipProcessor.from_pretrained(cap_id)
     cap_model = BlipForConditionalGeneration.from_pretrained(cap_id)
 
