@@ -4,6 +4,7 @@ from PIL import Image
 import io
 import torch
 from transformers import BlipProcessor, BlipForConditionalGeneration
+
 from transformers import (
     VisionEncoderDecoderModel, ViTImageProcessor, AutoTokenizer, AutoModelForSeq2SeqLM,
     M2M100ForConditionalGeneration, M2M100Tokenizer,
@@ -24,12 +25,12 @@ def load_models():
     #cap_tok = AutoTokenizer.from_pretrained(cap_id)
 
     
-    cap_id = "Salesforce/blip2-flan-t5-xl"
+    cap_id ="Salesforce/blip-image-captioning-base"
     processor = BlipProcessor.from_pretrained(cap_id)
     cap_model = BlipForConditionalGeneration.from_pretrained(cap_id)
 
     # text generator
-    text_id = "google/flan-t5-base"
+    text_id = "google/flan-t5-small"
     text_tok = AutoTokenizer.from_pretrained(text_id)
     text_model = AutoModelForSeq2SeqLM.from_pretrained(text_id)
 
