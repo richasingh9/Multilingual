@@ -3,6 +3,7 @@ import streamlit as st
 from PIL import Image
 import io
 import torch
+from transformers import BlipProcessor, BlipForConditionalGeneration
 from transformers import (
     VisionEncoderDecoderModel, ViTImageProcessor, AutoTokenizer, AutoModelForSeq2SeqLM,
     M2M100ForConditionalGeneration, M2M100Tokenizer,
@@ -10,20 +11,25 @@ from transformers import (
 )
 
 st.set_page_config(page_title="Image Captioner - Improved Multilang", layout="centered")
-st.title("ImageVaani: In Multilingual— EN → HI / TA / BHO ")
+st.title("ImageSaar — In Multilingual EN → HI / TA / BHO")
 
 @st.cache_resource
 def load_models():
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # caption model (same)
-    cap_id = "nlpconnect/vit-gpt2-image-captioning"
-    cap_model = VisionEncoderDecoderModel.from_pretrained(cap_id)
-    feat = ViTImageProcessor.from_pretrained(cap_id)
-    cap_tok = AutoTokenizer.from_pretrained(cap_id)
+    #cap_id = "Salesforce/blip-image-captioning-base"
+    #cap_model = VisionEncoderDecoderModel.from_pretrained(cap_id)
+    #feat = ViTImageProcessor.from_pretrained(cap_id)
+    #cap_tok = AutoTokenizer.from_pretrained(cap_id)
+
+    
+    cap_id = "Salesforce/blip2-flan-t5-xl"
+    processor = BlipProcessor.from_pretrained(cap_id)
+    cap_model = BlipForConditionalGeneration.from_pretrained(cap_id)
 
     # text generator
-    text_id = "google/flan-t5-small"
+    text_id = "google/flan-t5-base"
     text_tok = AutoTokenizer.from_pretrained(text_id)
     text_model = AutoModelForSeq2SeqLM.from_pretrained(text_id)
 
@@ -61,7 +67,7 @@ def load_models():
 
     return {
         "device": device,
-        "cap_model": cap_model, "feat": feat, "cap_tok": cap_tok,
+        "cap_model": cap_model, "processor": processor,
         "text_model": text_model, "text_tok": text_tok,
         "hi_model": hi_model, "hi_tok": hi_tok,
         "m2m_model": m2m_model, "m2m_tok": m2m_tok,
@@ -79,17 +85,22 @@ if uploaded:
     st.image(image, use_column_width=True)
 
     # caption en
-    px = models["feat"](images=image, return_tensors="pt").pixel_values.to(models["device"])
-    out = models["cap_model"].generate(px, max_length=16, num_beams=4)
-    cap_en = models["cap_tok"].decode(out[0], skip_special_tokens=True).strip()
+    #px = models["feat"](images=image, return_tensors="pt").pixel_values.to(models["device"])
+    #out = models["cap_model"].generate(px, max_length=16, num_beams=4)
+    #cap_en = models["cap_tok"].decode(out[0], skip_special_tokens=True).strip()
+    inputs = models["processor"](image, return_tensors="pt").to(models["device"])
+    out = models["cap_model"].generate(**inputs)
+    cap_en = models["processor"].decode(out[0], skip_special_tokens=True)
     st.subheader("Caption (English)"); st.write(cap_en)
 
     # description en
-    prompt = f"Write a descriptive paragraph about: {cap_en}"
+    prompt = f"Write a single paragraph of about 50 words describing the image in detail, including objects, actions, colors, and surroundings: {cap_en}"
     inputs = models["text_tok"].encode(prompt, return_tensors="pt", truncation=True, max_length=512).to(models["device"])
-    desc_ids = models["text_model"].generate(inputs, max_new_tokens=180, num_beams=4)
+    desc_ids = models["text_model"].generate(inputs, max_new_tokens=80, do_sample=True, temperature=0.7, top_p=0.9)
     desc_en = models["text_tok"].decode(desc_ids[0], skip_special_tokens=True).strip()
     st.subheader("Description (English)"); st.write(desc_en)
+    desc_en = desc_en.replace("\n", " ")
+    desc_en = " ".join(desc_en.split()[:50])
 
     # prepare outputs dict
     outputs = {"English": {"caption": cap_en, "description": desc_en}}
