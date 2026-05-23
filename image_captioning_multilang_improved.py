@@ -10,7 +10,7 @@ from transformers import (
 )
 
 st.set_page_config(page_title="Image Captioner - Improved Multilang", layout="centered")
-st.title("ImageVaani: In Multilingual— EN → HI / TA / BHO ")
+st.title("Image Captioner — EN → HI / TA / BHO (improved)")
 
 @st.cache_resource
 def load_models():
