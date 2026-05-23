@@ -24,12 +24,12 @@ def load_models():
     #cap_tok = AutoTokenizer.from_pretrained(cap_id)
 
     
-    cap_id = "Salesforce/blip2-flan-t5-xl"
+    cap_id = "Salesforce/blip-image-captioning-base"
     processor = BlipProcessor.from_pretrained(cap_id)
     cap_model = BlipForConditionalGeneration.from_pretrained(cap_id)
 
     # text generator
-    text_id = "google/flan-t5-base"
+    text_id = "google/flan-t5-small"
     text_tok = AutoTokenizer.from_pretrained(text_id)
     text_model = AutoModelForSeq2SeqLM.from_pretrained(text_id)
 
@@ -39,7 +39,7 @@ def load_models():
     hi_model = AutoModelForSeq2SeqLM.from_pretrained(hi_model_id)
 
     # Tamil translator (M2M100)
-    m2m_id = "facebook/m2m100_418M"
+    m2m_id = "Helsinki-NLP/opus-mt-en-ta"
     m2m_tok = M2M100Tokenizer.from_pretrained(m2m_id)
     m2m_model = M2M100ForConditionalGeneration.from_pretrained(m2m_id)
 
