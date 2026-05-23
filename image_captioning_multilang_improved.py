@@ -47,8 +47,8 @@ def load_models():
     bho_tokenizer = None
     bho_model = None
     try:
-        bho_tok = AutoTok.from_pretrained("pksx01/sarvam-1-it-bhojpuri")
-        bho_m = AutoModelForCausalLM.from_pretrained("pksx01/sarvam-1-it-bhojpuri")
+        #bho_tok = AutoTok.from_pretrained("pksx01/sarvam-1-it-bhojpuri")
+        #bho_m = AutoModelForCausalLM.from_pretrained("pksx01/sarvam-1-it-bhojpuri")
         bho_tokenizer = bho_tok
         bho_model = bho_m
     except Exception:
